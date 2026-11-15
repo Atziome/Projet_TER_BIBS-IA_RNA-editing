@@ -1,0 +1,12 @@
+# Ligne à mettre dans le terminal pour réaliser la création des fichiers transcrits_canoniques qui sont nécessaires au BLAST
+
+makeblastdb -in transcrits_principaux_courts.fa -dbtype nucl -parse_seqids -out transcrits_canoniques_db
+
+# Pour réaliser le BLAST
+
+blastn -task blastn-short \
+-query sondes_wildtype.fasta \
+-db transcrits_canoniques_db \
+-evalue 1e-10 \
+-out sondes_blast.txt \
+-outfmt 0
