@@ -1,0 +1,504 @@
+import re
+
+
+def analyse_transcripts():
+# Partie 1: Création d'un fichier fasta avec tous les transcripts principaux
+    transcripts_principaux = []
+
+    # On récupère les transcripts principaux
+    with open("gencode.v50.annotation.gtf", "r") as fichier:
+        for ligne in fichier:
+            # On garde uniquement les transcripts codant pour des protéines
+            # et possédant le tag Ensembl_canonical
+            if 'tag "Ensembl_canonical"' in ligne and "\ttranscript\t" in ligne and 'gene_type "protein_coding"' in ligne:
+                resultat = re.search(r'transcript_id\s+"([^"]+)"', ligne)
+                if resultat:
+                    transcripts_principaux.append(resultat.group(1))
+    transcripts_principaux = set(transcripts_principaux)
+
+    # On crée un nouveau fichier contenant uniquement les transcripts sélectionnés
+    with open("gencode.v50.transcripts.fa", "r") as fasta, \
+         open("transcrits_principaux.fa", "w") as sortie:
+
+        garder = False
+
+        for ligne in fasta:
+            ligne = ligne.strip()
+            if ligne.startswith(">"):
+                # On récupère l'identifiant du transcript dans l'en tête
+                transcript_id = ligne[1:].split("|")[0]
+                if transcript_id in transcripts_principaux:
+                    garder = True
+                    sortie.write(ligne + "\n")
+                else:
+                    garder = False
+            elif garder:
+                # On écrit la séquence si le transcript a été sélectionné
+                sortie.write(ligne + "\n")
+
+# Partie 2: Création d'un fichier fasta contenant les informations des sequences et des homopolymeres presents dans les sequencesz
+    # On recherche maintenant les homopolymères dans les transcripts sélectionnés
+    with open("transcrits_principaux.fa", "r") as fichier, \
+         open("homopolymeres.fasta", "w") as sortie:
+
+        transcript_id = None
+        sequence = ""
+
+        for ligne in fichier:
+            if ligne.startswith(">"):
+                # On traite le transcript précédent avant de passer au suivant
+                if transcript_id is not None:
+                    homopolymeres = []
+                    # On recherche les suites d'au moins 5 nucléotides dans chaques sequences
+                    for match in re.finditer(r"([ACGT])\1{4,}", sequence):
+                        homopolymere = match.group(0)
+                        # La position commence à 1 dans la séquence
+                        position = match.start() + 1
+                        homopolymeres.append((homopolymere, position))
+                    # On écrit les informations du transcript
+                    sortie.write(
+                        ">" + transcript_id
+                        + "|taille=" + str(len(sequence))
+                        + "|homopolymeres=" + str(len(homopolymeres))
+                        + "\n"
+                    )
+                    # On écrit chaque homopolymère avec sa position
+                    for homopolymere, position in homopolymeres:
+                        sortie.write(
+                            homopolymere
+                            + "|position=" + str(position)
+                            + "\n"
+                        )
+                # On récupère l'identifiant du nouveau transcript
+                transcript_id = ligne[1:].split("|")[0]
+                sequence = ""
+            else:
+                # On rassemble les différentes lignes de la séquence
+                sequence += ligne.strip()
+        # On traite le dernier transcript du fichier
+        if transcript_id is not None:
+            homopolymeres = []
+            for match in re.finditer(r"([ACGT])\1{4,}", sequence):
+                homopolymere = match.group(0)
+                position = match.start() + 1
+                homopolymeres.append((homopolymere, position))
+
+            sortie.write(
+                ">" + transcript_id
+                + "|taille=" + str(len(sequence))
+                + "|homopolymeres=" + str(len(homopolymeres))
+                + "\n"
+            )
+
+            for homopolymere, position in homopolymeres:
+                sortie.write(
+                    homopolymere
+                    + "|position=" + str(position)
+                    + "\n"
+                )
+
+
+# Lancer l'analyse
+#analyse_transcripts()
+
+
+# Fonction supplementaire pour connaitre le nombre de transcripts (equivalent de grep)
+def nombre_de_transcripts():
+    with open("transcrits_principaux.fa", "r") as fichier:
+        nombre = sum(1 for ligne in fichier if ligne.startswith(">"))
+
+    print(nombre)
+
+#nombre_de_transcripts()
+
+def creation_tab():
+    # J'utilise la bibliothèque panda pour créer un tableau que je peux exporter sur excel 
+    import pandas as pd
+
+    # On initialise le tableau avec les differentes longueurs en index et une colonne pour chaque type de poly
+    statistiques = pd.DataFrame(
+        0,
+        index=["5", "6", "7", "8", "9", ">=10"],
+        columns=["polyA", "polyT", "polyG", "polyC"]
+    )
+
+    # On parcourt le fichier contenant les homopolymeres
+    with open("homopolymeres.fasta", "r") as fichier:
+
+        for ligne in fichier:
+
+            # On passe les en-tetes des transcripts 
+            if not ligne.startswith(">"):
+                homopolymere= ligne.strip().split("|")[0]
+                
+                if homopolymere:
+                    longueur= len(homopolymere)
+                    nucleotide= homopolymere[0]
+                    # On determine la categorie de longueur
+                    if longueur >= 10:
+                        categorie = "10+"
+                    elif longueur >= 5:
+                        categorie = str(longueur)
+                    else:
+                        continue
+                    # On ajoute 1 dans la bonne case du tableau
+                    colonne= "poly" + nucleotide
+                    statistiques.loc[categorie, colonne] += 1
+
+    # On ajoute le nom de l'index dans la premiere colonne 
+    statistiques.index.name = "N"
+    # On affiche le tableau dans le terminal
+    print(statistiques)
+    # On enregistre les resultats dans un fichier CSV pour utiliser sur excel
+    statistiques.to_csv("statistiques_homopolymeres.csv")
+
+#creation_tab()
+
+
+
+# Partie 5 : Creation des sondes wildtype et des variantes +1 et +2
+
+def creer_sondes():
+
+    taille_sonde = 55
+
+    # Recuperation des sequences des transcripts
+    transcripts = {}
+
+    with open("transcrits_principaux.fa", "r") as fasta:
+
+        transcript_id = ""
+        sequence = ""
+
+        for ligne in fasta:
+
+            ligne = ligne.strip()
+
+            if ligne.startswith(">"):
+
+                # On enregistre le transcript precedent
+                if transcript_id:
+                    transcripts[transcript_id] = sequence
+
+                # On recupere l'identifiant du transcript
+                transcript_id = ligne[1:].split("|")[0]
+                sequence = ""
+
+            else:
+                sequence += ligne
+
+        # On enregistre le dernier transcript
+        if transcript_id:
+            transcripts[transcript_id] = sequence
+
+    # Creation des fichiers de sondes
+    with open("homopolymeres.fasta", "r") as fichier, \
+         open("sondes_wildtype.fasta", "w") as sortie_wt, \
+         open("sondes_variantes.fasta", "w") as sortie_variantes:
+
+        transcript_id = ""
+
+        nombre_wt = 0
+        nombre_plus1 = 0
+        nombre_plus2 = 0
+
+        nombre_wt_ignorees = 0
+        nombre_plus1_ignorees = 0
+        nombre_plus2_ignorees = 0
+
+        # Listes pour conserver les sondes ignorees
+        sondes_wt_ignorees = []
+        sondes_plus1_ignorees = []
+        sondes_plus2_ignorees = []
+
+        for ligne in fichier:
+
+            ligne = ligne.strip()
+
+            # On recupere l'identifiant du transcript
+            if ligne.startswith(">"):
+                transcript_id = ligne[1:].split("|")[0]
+
+            elif ligne:
+
+                # On recupere l'homopolymere et sa position
+                resultat = re.search(
+                    r"([ACGT]+)\|position=(\d+)",
+                    ligne
+                )
+
+                if not resultat:
+                    continue
+
+                homopolymer = resultat.group(1)
+                position = int(resultat.group(2))
+
+                # On conserve uniquement les homopolymeres >= 7
+                if len(homopolymer) < 7:
+                    continue
+
+                # On verifie que le transcript existe
+                if transcript_id not in transcripts:
+
+                    raison = "Transcript introuvable"
+
+                    sondes_wt_ignorees.append(
+                        f"{transcript_id} | position={position} | {raison}"
+                    )
+                    sondes_plus1_ignorees.append(
+                        f"{transcript_id} | position={position} | {raison}"
+                    )
+                    sondes_plus2_ignorees.append(
+                        f"{transcript_id} | position={position} | {raison}"
+                    )
+
+                    nombre_wt_ignorees += 1
+                    nombre_plus1_ignorees += 1
+                    nombre_plus2_ignorees += 1
+                    continue
+
+                sequence = transcripts[transcript_id]
+
+                # La position du homopolymere commence a 1
+                debut = position - 1
+                fin = debut + len(homopolymer)
+
+                # On verifie que le transcript est assez long
+                if len(sequence) < taille_sonde:
+
+                    raison = "Transcript trop court pour une sonde de 55 nt"
+
+                    sondes_wt_ignorees.append(
+                        f"{transcript_id} | position={position} | {raison}"
+                    )
+                    sondes_plus1_ignorees.append(
+                        f"{transcript_id} | position={position} | {raison}"
+                    )
+                    sondes_plus2_ignorees.append(
+                        f"{transcript_id} | position={position} | {raison}"
+                    )
+
+                    nombre_wt_ignorees += 1
+                    nombre_plus1_ignorees += 1
+                    nombre_plus2_ignorees += 1
+                    continue
+
+                # On verifie que l'homopolymere peut tenir dans 55 nt
+                if len(homopolymer) > taille_sonde:
+
+                    raison = "Homopolymere trop long pour une sonde de 55 nt"
+
+                    sondes_wt_ignorees.append(
+                        f"{transcript_id} | position={position} | {raison}"
+                    )
+                    sondes_plus1_ignorees.append(
+                        f"{transcript_id} | position={position} | {raison}"
+                    )
+                    sondes_plus2_ignorees.append(
+                        f"{transcript_id} | position={position} | {raison}"
+                    )
+
+                    nombre_wt_ignorees += 1
+                    nombre_plus1_ignorees += 1
+                    nombre_plus2_ignorees += 1
+                    continue
+
+                # Calcul de la position de depart de la sonde
+                taille_flancs = taille_sonde - len(homopolymer)
+                gauche = taille_flancs // 2
+
+                debut_sonde = debut - gauche
+
+                # On decale la sonde si elle depasse le debut du transcript
+                if debut_sonde < 0:
+                    debut_sonde = 0
+
+                # On decale la sonde si elle depasse la fin du transcript
+                if debut_sonde + taille_sonde > len(sequence):
+                    debut_sonde = len(sequence) - taille_sonde
+
+                fin_sonde = debut_sonde + taille_sonde
+
+                # Extraction de la sonde wildtype
+                sonde = sequence[debut_sonde:fin_sonde]
+
+                # Position de l'homopolymere dans la sonde
+                debut_poly = debut - debut_sonde
+
+                # On verifie que la sonde fait bien 55 nucleotides
+                if len(sonde) != taille_sonde:
+
+                    raison = "La sonde ne fait pas 55 nt"
+
+                    sondes_wt_ignorees.append(
+                        f"{transcript_id} | position={position} | {raison}"
+                    )
+                    sondes_plus1_ignorees.append(
+                        f"{transcript_id} | position={position} | {raison}"
+                    )
+                    sondes_plus2_ignorees.append(
+                        f"{transcript_id} | position={position} | {raison}"
+                    )
+
+                    nombre_wt_ignorees += 1
+                    nombre_plus1_ignorees += 1
+                    nombre_plus2_ignorees += 1
+                    continue
+
+                # Ecriture de la sonde wildtype
+                entete = (
+                    f">{transcript_id}"
+                    f"|position={position}"
+                    f"|poly={homopolymer}"
+                    f"|variante=WT"
+                )
+
+                sortie_wt.write(entete + "\n")
+                sortie_wt.write(sonde + "\n")
+
+                nombre_wt += 1
+
+                # Recuperation des parties de la sonde
+                gauche = sonde[:debut_poly]
+                poly = homopolymer
+                droite = sonde[debut_poly + len(homopolymer):]
+
+                base = homopolymer[0]
+
+                # Creation des variantes +1 et +2
+                for augmentation in [1, 2]:
+
+                    # Nombre de nucleotides a retirer de chaque cote
+                    retirer_gauche = min(
+                        (augmentation + 1) // 2, len(gauche)
+                    )
+                    retirer_droite = min(
+                        augmentation - retirer_gauche, len(droite)
+                    )
+
+                    # Si necessaire, on retire les nucleotides restants
+                    reste = augmentation - retirer_gauche - retirer_droite
+
+                    if reste > 0:
+                        supplement_gauche = min(
+                            reste, len(gauche) - retirer_gauche
+                        )
+                        retirer_gauche += supplement_gauche
+                        reste -= supplement_gauche
+
+                    if reste > 0:
+                        supplement_droite = min(
+                            reste, len(droite) - retirer_droite
+                        )
+                        retirer_droite += supplement_droite
+                        reste -= supplement_droite
+
+                    # On verifie qu'il est possible de creer la variante
+                    if reste > 0:
+
+                        raison = "Pas assez de nucleotides dans les flancs"
+
+                        if augmentation == 1:
+                            nombre_plus1_ignorees += 1
+                            sondes_plus1_ignorees.append(
+                                f"{transcript_id} | position={position} | {raison}"
+                            )
+                        else:
+                            nombre_plus2_ignorees += 1
+                            sondes_plus2_ignorees.append(
+                                f"{transcript_id} | position={position} | {raison}"
+                            )
+
+                        continue
+
+                    # On augmente l'homopolymere et on raccourcit les flancs
+                    nouvelle_gauche = gauche[retirer_gauche:]
+                    nouvel_homopolymer = poly + base * augmentation
+                    nouvelle_droite = droite[:len(droite) - retirer_droite]
+
+                    sonde_variante = (
+                        nouvelle_gauche
+                        + nouvel_homopolymer
+                        + nouvelle_droite
+                    )
+
+                    # On verifie que la variante fait toujours 55 nt
+                    if len(sonde_variante) != taille_sonde:
+
+                        raison = "La variante ne fait pas 55 nt"
+
+                        if augmentation == 1:
+                            nombre_plus1_ignorees += 1
+                            sondes_plus1_ignorees.append(
+                                f"{transcript_id} | position={position} | {raison}"
+                            )
+                        else:
+                            nombre_plus2_ignorees += 1
+                            sondes_plus2_ignorees.append(
+                                f"{transcript_id} | position={position} | {raison}"
+                            )
+
+                        continue
+
+                    # Ecriture de la variante
+                    entete = (
+                        f">{transcript_id}"
+                        f"|position={position}"
+                        f"|poly={homopolymer}"
+                        f"|poly_variante={nouvel_homopolymer}"
+                        f"|variante=+{augmentation}"
+                    )
+
+                    sortie_variantes.write(entete + "\n")
+                    sortie_variantes.write(sonde_variante + "\n")
+
+                    if augmentation == 1:
+                        nombre_plus1 += 1
+                    else:
+                        nombre_plus2 += 1
+
+    # Affichage des resultats
+    print("\n--- Bilan des sondes creees ---")
+    print("Nombre de sondes wildtype creees :", nombre_wt)
+    print("Nombre de sondes +1 creees :", nombre_plus1)
+    print("Nombre de sondes +2 creees :", nombre_plus2)
+
+    print("\n--- Bilan des sondes ignorees ---")
+    print("Nombre de sondes wildtype ignorees :", nombre_wt_ignorees)
+    print("Nombre de sondes +1 ignorees :", nombre_plus1_ignorees)
+    print("Nombre de sondes +2 ignorees :", nombre_plus2_ignorees)
+
+    # Affichage detaille des sondes ignorees
+    print("\n--- Liste des sondes wildtype ignorees ---")
+
+    for sonde in sondes_wt_ignorees:
+        print(sonde)
+
+    print("\n--- Liste des sondes +1 ignorees ---")
+
+    for sonde in sondes_plus1_ignorees:
+        print(sonde)
+
+    print("\n--- Liste des sondes +2 ignorees ---")
+
+    for sonde in sondes_plus2_ignorees:
+        print(sonde)
+
+
+creer_sondes()
+
+
+
+
+
+with open("transcrits_principaux.fa", "r") as fasta, \
+     open("transcrits_principaux_courts.fa", "w") as sortie:
+
+    for ligne in fasta:
+        ligne = ligne.strip()
+
+        if ligne.startswith(">"):
+            transcript_id = ligne[1:].split("|")[0]
+            sortie.write(">" + transcript_id + "\n")
+        else:
+            sortie.write(ligne + "\n")
